@@ -1,4 +1,4 @@
-# simple-router — Documentación
+# vanilla-router — Documentación
 
 Un enrutador HTTP ligero y sin dependencias para PHP 8.1+, inspirado en Express.js.
 
@@ -32,7 +32,7 @@ Un enrutador HTTP ligero y sin dependencias para PHP 8.1+, inspirado en Express.
 ## Instalación
 
 ```bash
-composer require alberto-cruz-mtz/simple-router
+composer require alberto-cruz-mtz/vanilla-router
 ```
 
 ---

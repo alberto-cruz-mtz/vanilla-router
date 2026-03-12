@@ -1,10 +1,10 @@
-# AGENTS.md — simple-router
+# AGENTS.md — vanilla-router
 
 Coding guidelines and project reference for agentic coding tools working in this repository.
 
 ## Project Overview
 
-`simple-router` is a pure PHP HTTP router library inspired by Express.js. It has zero runtime
+`vanilla-router` is a pure PHP HTTP router library inspired by Express.js. It has zero runtime
 dependencies (PHP 8.1+ only) and no frontend assets, build steps, or JavaScript of any kind.
 
 **Source layout:**

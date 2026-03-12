@@ -1,5 +1,5 @@
 {
-  "name": "alberto-cruz-mtz/simple-router",
+  "name": "alberto-cruz-mtz/vanilla-router",
   "description": "Enrutador HTTP inspirado en Express para PHP con tipos estrictos, canalización de middleware y manejo de errores limpio. permitiendo utilizar un enrutador basico sin librerias pesadas",
   "type": "library",
   "license": "MIT",

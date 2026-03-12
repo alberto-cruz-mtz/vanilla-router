@@ -1,4 +1,4 @@
-# simple-router
+# vanilla-router
 
 A lightweight, zero-dependency HTTP router for PHP 8.1+, inspired by Express.js.
 
@@ -15,7 +15,7 @@ A lightweight, zero-dependency HTTP router for PHP 8.1+, inspired by Express.js.
 ## Installation
 
 ```bash
-composer require alberto-cruz-mtz/simple-router
+composer require alberto-cruz-mtz/vanilla-router
 ```
 
 ## Quick Start
