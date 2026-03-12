@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace Router;
 
+use JsonException;
+use RuntimeException;
+
 /**
  * Builds and sends the HTTP response.
  * Supports HTML views, JSON payloads, redirects, and custom headers.
@@ -63,12 +66,12 @@ final class Response
      *
      * @param string $viewPath Absolute path to the .php view file.
      * @param array  $data     Variables extracted into the view scope.
-     * @throws \RuntimeException When the view file is not found.
+     * @throws RuntimeException When the view file is not found.
      */
     public function view(string $viewPath, array $data = [], int $statusCode = 200): void
     {
         if (!file_exists($viewPath)) {
-            throw new \RuntimeException("View file not found: {$viewPath}");
+            throw new RuntimeException("View file not found: {$viewPath}");
         }
 
         $this->status($statusCode)
@@ -81,7 +84,7 @@ final class Response
     /**
      * Sends a JSON response.
      *
-     * @throws \JsonException On encoding failure.
+     * @throws JsonException On encoding failure.
      */
     public function json(mixed $data, int $statusCode = 200): void
     {
