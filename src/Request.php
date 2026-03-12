@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Router;
 
+use Router\Security\AuthenticatedUser;
+
 /**
  * Encapsulates the incoming HTTP request data.
  * Provides safe access to query params, body, headers, and route params.
@@ -11,6 +13,7 @@ namespace Router;
 final class Request
 {
     private array $routeParams = [];
+    private ?AuthenticatedUser $authenticatedUser = null;
 
     public function __construct(
         private readonly string $method,
@@ -20,18 +23,20 @@ final class Request
         private readonly array  $headers,
         private readonly array  $files,
         private readonly string $rawBody,
-    ) {}
+    )
+    {
+    }
 
     public static function fromGlobals(): self
     {
         return new self(
-            method:      strtoupper($_SERVER['REQUEST_METHOD'] ?? 'GET'),
-            path:        self::parsePath(),
+            method: strtoupper($_SERVER['REQUEST_METHOD'] ?? 'GET'),
+            path: self::parsePath(),
             queryParams: $_GET,
-            bodyParams:  self::parseBodyParams(),
-            headers:     self::parseHeaders(),
-            files:       $_FILES,
-            rawBody:     file_get_contents('php://input') ?: '',
+            bodyParams: self::parseBodyParams(),
+            headers: self::parseHeaders(),
+            files: $_FILES,
+            rawBody: file_get_contents('php://input') ?: '',
         );
     }
 
@@ -209,5 +214,33 @@ final class Request
         }
 
         return $headers;
+    }
+
+    /**
+     * Called by the SecurityChain to attach the resolved user.
+     * Returns a new immutable instance — does not mutate the original.
+     */
+    public function withUser(AuthenticatedUser $user): self
+    {
+        $clone = clone $this;
+        $clone->authenticatedUser = $user;
+        return $clone;
+    }
+
+    /**
+     * Returns the authenticated user attached by the SecurityChain,
+     * or null if the request is unauthenticated / security is not enabled.
+     */
+    public function user(): ?AuthenticatedUser
+    {
+        return $this->authenticatedUser;
+    }
+
+    /**
+     * Returns true when the request carries an authenticated user.
+     */
+    public function isAuthenticated(): bool
+    {
+        return $this->authenticatedUser !== null;
     }
 }
