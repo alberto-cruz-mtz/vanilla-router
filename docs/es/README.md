@@ -21,6 +21,22 @@ Un enrutador HTTP ligero y sin dependencias para PHP 8.1+, inspirado en Express.
 - [Response](#response)
 - [Middleware](#middleware)
 - [HttpException](#httpexception)
+- [Seguridad](#seguridad)
+  - [Descripción General](#descripción-general)
+  - [SecurityChain](#securitychain)
+  - [Definición de Reglas](#definición-de-reglas)
+  - [Coincidencia de Patrones de Ruta](#coincidencia-de-patrones-de-ruta)
+  - [Políticas de Acceso](#políticas-de-acceso)
+  - [Respuestas Personalizadas para 401 y 403](#respuestas-personalizadas-para-401-y-403)
+  - [UserResolverInterface](#userresolverinterface)
+  - [Resolvers Integrados](#resolvers-integrados)
+    - [JwtUserResolver](#jwtuserresolver)
+    - [SessionUserResolver](#sessionuserresolver)
+    - [ChainUserResolver](#chainuserresolver)
+  - [AuthenticatedUser](#authenticateduser)
+  - [Acceder al Usuario en los Handlers](#acceder-al-usuario-en-los-handlers)
+  - [Ejemplo Completo](#ejemplo-completo)
+  - [Flujo de Ejecución](#flujo-de-ejecución)
 - [Arquitectura](#arquitectura)
 
 ---
@@ -412,6 +428,420 @@ throw HttpException::internalServerError('Error interno');    // 500
 
 ```php
 throw new HttpException(429, 'Demasiadas Peticiones');
+```
+
+---
+
+## Seguridad
+
+### Descripción General
+
+`vanilla-router` incluye una capa de seguridad declarativa inspirada en el **`SecurityFilterChain`
+de Spring Security**. Permite definir políticas de acceso por ruta en una única cadena fluida
+que se conecta al router como middleware global estándar — nunca es necesario modificar las
+definiciones de rutas existentes.
+
+Propiedades clave:
+
+- **Seguro por defecto (fail-secure)** — si ninguna regla coincide con la ruta entrante, la
+  petición es denegada (401).
+- **Primera coincidencia gana** — las reglas se evalúan en orden de registro; la primera que
+  coincide determina el resultado.
+- **Sin acoplamiento** — `SecurityChain` implementa `MiddlewareInterface` y se registra con
+  `$router->use()` como cualquier otro middleware.
+- **Propagación de request inmutable** — el usuario resuelto se adjunta al request mediante
+  el patrón clone/wither (`withUser()`), sin mutar el objeto original.
+- **Sin dependencias externas** — la verificación JWT se realiza internamente usando sólo las
+  funciones nativas `hash_hmac` y `hash_equals` de PHP.
+
+---
+
+### SecurityChain
+
+`Router\Security\SecurityChain` es la clase principal. Se crea con la fábrica estática y
+recibe una implementación de `UserResolverInterface`:
+
+```php
+use Router\Security\SecurityChain;
+use Router\Resolvers\JwtUserResolver;
+
+$security = SecurityChain::configure(
+    new JwtUserResolver(secret: $_ENV['JWT_SECRET'])
+);
+
+$router->use($security);
+```
+
+Todos los métodos de registro de reglas devuelven la instancia de `SecurityChain`, lo que
+permite encadenarlos de forma fluida.
+
+---
+
+### Definición de Reglas
+
+Usa `SecurityChain::path(string $pattern)` para iniciar una regla. Devuelve un `RuleBuilder`
+cuyos métodos terminales registran la regla y retornan la cadena:
+
+```php
+$security = SecurityChain::configure($userResolver)
+    ->path('/login')->permitAll()
+    ->path('/register')->permitAll()
+    ->path('/admin/*')->hasRole('admin')
+    ->path('/api/*')->authenticated()
+    ->path('/*')->authenticated();
+```
+
+> Las reglas se evalúan **de arriba hacia abajo**. Coloca los patrones más específicos antes
+> que los comodines.
+
+---
+
+### Coincidencia de Patrones de Ruta
+
+Se admiten tres modos de coincidencia:
+
+| Modo              | Ejemplo          | Coincide con                                        |
+| ----------------- | ---------------- | --------------------------------------------------- |
+| Exacto            | `/login`         | Solo `/login`                                       |
+| Comodín sufijo    | `/admin/*`       | `/admin/`, `/admin/usuarios`, `/admin/x/y/z`        |
+| Parámetro nombrado | `/users/:id`    | `/users/42`, `/users/abc`                           |
+
+---
+
+### Políticas de Acceso
+
+| Método del builder          | Política                                                                |
+| --------------------------- | ----------------------------------------------------------------------- |
+| `->permitAll()`             | Sin verificación de autenticación; la petición pasa de inmediato.       |
+| `->authenticated()`         | La petición debe llevar un usuario autenticado válido (cualquier rol).  |
+| `->hasRole('a', 'b')`       | El usuario debe tener **todos** los roles listados (lógica AND).        |
+| `->hasAnyRole('a', 'b')`    | El usuario debe tener **al menos uno** de los roles listados (lógica OR). |
+
+```php
+SecurityChain::configure($resolver)
+    // Rutas públicas
+    ->path('/login')->permitAll()
+    ->path('/api/v1/token')->permitAll()
+
+    // Área admin — debe tener el rol 'admin'
+    ->path('/admin/*')->hasRole('admin')
+
+    // Portal de soporte — 'admin' O 'support'
+    ->path('/api/v1/tickets/*')->hasAnyRole('admin', 'support')
+
+    // Todo lo demás — cualquier usuario autenticado
+    ->path('/*')->authenticated();
+```
+
+---
+
+### Respuestas Personalizadas para 401 y 403
+
+Por defecto, la cadena responde según si la petición parece ser una llamada API/XHR o una
+petición normal de navegador:
+
+| Condición           | API / XHR                                             | Navegador          |
+| ------------------- | ----------------------------------------------------- | ------------------ |
+| No autenticado      | `{"error":true,"message":"Unauthenticated."} 401`     | Redirección `/login` |
+| Rol insuficiente    | `{"error":true,"message":"Forbidden..."} 403`         | Redirección `/`    |
+
+Ambos comportamientos se pueden reemplazar con `onUnauthorized()` y `onForbidden()`:
+
+```php
+use Router\Request;
+use Router\Response;
+
+$security = SecurityChain::configure($resolver)
+    ->path('/*')->authenticated()
+    ->onUnauthorized(static function (Request $req, Response $res): void {
+        if ($req->isJson() || $req->isXhr()) {
+            $res->json(['error' => true, 'message' => 'Por favor, inicia sesión.'], 401);
+            return;
+        }
+        $res->redirect('/login');
+    })
+    ->onForbidden(static function (Request $req, Response $res): void {
+        if ($req->isJson() || $req->isXhr()) {
+            $res->json(['error' => true, 'message' => 'Acceso denegado.'], 403);
+            return;
+        }
+        $res->redirect('/403');
+    });
+```
+
+---
+
+### UserResolverInterface
+
+`Router\Contracts\UserResolverInterface` es el único punto de integración entre el sistema de
+seguridad y el backend de autenticación:
+
+```php
+interface UserResolverInterface
+{
+    public function resolve(Request $request): ?AuthenticatedUser;
+}
+```
+
+Devuelve un `AuthenticatedUser` cuando las credenciales son válidas, `null` cuando la petición
+es anónima o las credenciales están ausentes o son inválidas, o lanza un `HttpException` para
+abortar de inmediato con una respuesta HTTP de error.
+
+**Ejemplo de resolver personalizado (API key):**
+
+```php
+final class ApiKeyResolver implements UserResolverInterface
+{
+    public function resolve(Request $request): ?AuthenticatedUser
+    {
+        $key = $request->header('x-api-key');
+
+        if ($key === null) {
+            return null;
+        }
+
+        $registro = $this->db->buscarPorApiKey($key);
+
+        if ($registro === null) {
+            return null;
+        }
+
+        return new AuthenticatedUser(
+            id:    (string) $registro['id'],
+            name:  $registro['nombre'],
+            roles: $registro['roles'],
+        );
+    }
+}
+```
+
+---
+
+### Resolvers Integrados
+
+#### JwtUserResolver
+
+`Router\Resolvers\JwtUserResolver` verifica **tokens JWT Bearer HS256** sin ninguna librería
+externa. Lee `Authorization: Bearer <token>`, verifica la firma HMAC-SHA256, comprueba el
+claim `exp` y mapea los claims estándar a `AuthenticatedUser`:
+
+| Claim JWT | Mapea a                      |
+| --------- | ----------------------------- |
+| `sub`     | `AuthenticatedUser::$id`     |
+| `name`    | `AuthenticatedUser::$name`   |
+| `roles`   | `AuthenticatedUser::$roles`  |
+| otros     | `AuthenticatedUser::$extra`  |
+
+```php
+use Router\Resolvers\JwtUserResolver;
+
+$resolver = new JwtUserResolver(
+    secret:    $_ENV['JWT_SECRET'],
+    algorithm: 'HS256',  // valor por defecto — actualmente solo HS256 es soportado
+);
+```
+
+Devuelve `null` ante cualquier fallo: cabecera ausente, token malformado, firma inválida o
+token expirado.
+
+---
+
+#### SessionUserResolver
+
+`Router\Resolvers\SessionUserResolver` lee los datos de autenticación desde `$_SESSION`.
+Inicia la sesión automáticamente si aún no ha sido iniciada.
+
+Estructura esperada en la sesión:
+
+```php
+$_SESSION['auth'] = [
+    'id'    => '42',
+    'name'  => 'Alicia',
+    'roles' => ['editor'],
+    // cualquier campo adicional se pasa a AuthenticatedUser::$extra
+];
+```
+
+```php
+use Router\Resolvers\SessionUserResolver;
+
+// La clave de sesión por defecto es 'auth'
+$resolver = new SessionUserResolver(sessionKey: 'auth');
+```
+
+Devuelve `null` si la clave de sesión está ausente o si `id`/`name` faltan.
+
+---
+
+#### ChainUserResolver
+
+`Router\Resolvers\ChainUserResolver` es un **resolver compuesto** que prueba cada delegado en
+orden y devuelve el primer resultado no nulo. Úsalo para soportar múltiples mecanismos de
+autenticación simultáneamente (p. ej. sesión para páginas web y JWT para endpoints de API):
+
+```php
+use Router\Resolvers\ChainUserResolver;
+use Router\Resolvers\SessionUserResolver;
+use Router\Resolvers\JwtUserResolver;
+
+$resolver = new ChainUserResolver(
+    new SessionUserResolver(sessionKey: 'auth'),
+    new JwtUserResolver(secret: $_ENV['JWT_SECRET']),
+);
+```
+
+---
+
+### AuthenticatedUser
+
+`Router\Security\AuthenticatedUser` es un objeto de valor inmutable que representa a un
+usuario autenticado exitosamente.
+
+```php
+$user->getId();                          // string — identificador único
+$user->getName();                        // string — nombre de visualización
+$user->getRoles();                       // string[] — slugs de roles
+$user->hasRole('admin');                 // bool — verificación exacta de un rol
+$user->hasAnyRole('admin', 'editor');    // bool — verificación OR
+$user->get('departamento', 'sin asignar'); // mixed — claim extra con valor por defecto
+```
+
+---
+
+### Acceder al Usuario en los Handlers
+
+Cuando una petición llega a un handler protegido, el usuario está garantizado como no nulo:
+
+```php
+$router->get('/dashboard', static function (Request $req, Response $res): void {
+    $user = $req->user(); // AuthenticatedUser — siempre disponible dentro de una ruta protegida
+    $res->html('<h1>Bienvenido, ' . $user->getName() . '</h1>');
+});
+
+$router->get('/api/v1/perfil', static function (Request $req, Response $res): void {
+    $user = $req->user();
+    $res->json([
+        'id'     => $user->getId(),
+        'nombre' => $user->getName(),
+        'roles'  => $user->getRoles(),
+    ]);
+});
+```
+
+También puedes verificar el estado de autenticación en rutas no cubiertas por una regla de
+seguridad:
+
+```php
+if ($req->isAuthenticated()) {
+    // $req->user() no es null
+}
+```
+
+---
+
+### Ejemplo Completo
+
+```php
+<?php
+
+require 'vendor/autoload.php';
+
+use Router\Router;
+use Router\Request;
+use Router\Response;
+use Router\Security\SecurityChain;
+use Router\Resolvers\ChainUserResolver;
+use Router\Resolvers\SessionUserResolver;
+use Router\Resolvers\JwtUserResolver;
+
+// 1. Construir el resolver: primero sesión, luego token JWT Bearer
+$resolver = new ChainUserResolver(
+    new SessionUserResolver(sessionKey: 'auth'),
+    new JwtUserResolver(secret: $_ENV['JWT_SECRET'] ?? 'cambiar-en-produccion'),
+);
+
+// 2. Declarar la cadena de seguridad — reglas de primera coincidencia, de arriba a abajo
+$security = SecurityChain::configure($resolver)
+    ->path('/login')->permitAll()
+    ->path('/register')->permitAll()
+    ->path('/api/v1/token')->permitAll()
+    ->path('/admin/*')->hasRole('admin')
+    ->path('/api/v1/tickets/*')->hasAnyRole('admin', 'support')
+    ->path('/api/*')->authenticated()
+    ->path('/*')->authenticated()
+    ->onUnauthorized(static function (Request $req, Response $res): void {
+        if ($req->isJson() || $req->isXhr()) {
+            $res->json(['error' => true, 'message' => 'No autenticado.'], 401);
+            return;
+        }
+        $res->redirect('/login');
+    })
+    ->onForbidden(static function (Request $req, Response $res): void {
+        if ($req->isJson() || $req->isXhr()) {
+            $res->json(['error' => true, 'message' => 'Prohibido.'], 403);
+            return;
+        }
+        $res->redirect('/');
+    });
+
+// 3. Registrar en el router — una línea asegura toda la aplicación
+$router = new Router();
+$router->use($security);
+
+// 4. Definir rutas — sin lógica de autenticación dentro de los handlers
+$router->get('/login', static function (Request $req, Response $res): void {
+    $res->html('<form method="post" action="/login">...</form>');
+});
+
+$router->get('/admin/dashboard', static function (Request $req, Response $res): void {
+    $user = $req->user(); // garantizado no nulo — SecurityChain aplicó hasRole('admin')
+    $res->html('<h1>Panel de Administración — ' . $user->getName() . '</h1>');
+});
+
+$router->get('/api/v1/me', static function (Request $req, Response $res): void {
+    $user = $req->user();
+    $res->json([
+        'id'     => $user->getId(),
+        'nombre' => $user->getName(),
+        'roles'  => $user->getRoles(),
+    ]);
+});
+
+$router->dispatch();
+```
+
+---
+
+### Flujo de Ejecución
+
+```
+$router->use($securityChain)
+         │
+         ▼
+SecurityChain::handle(Request, Response, $next)
+         │
+         ├─ 1. Buscar la primera SecurityRule cuyo patrón coincida con la ruta
+         │        │
+         │        └─ Sin coincidencia → denegar 401 (fail-secure)
+         │
+         ├─ 2. ¿La política de la regla es PERMIT_ALL?
+         │        └─ Sí → llamar $next($request) inmediatamente, sin verificación de auth
+         │
+         ├─ 3. Llamar UserResolverInterface::resolve($request)
+         │        │
+         │        └─ Devuelve null → denegar 401 (no autenticado)
+         │
+         ├─ 4. Adjuntar usuario: $request = $request->withUser($user)  [clon inmutable]
+         │
+         ├─ 5. ¿El usuario satisface la política de la regla?
+         │        │  AUTHENTICATED  → siempre sí
+         │        │  HAS_ROLE       → el usuario debe tener TODOS los roles listados
+         │        │  HAS_ANY_ROLE   → el usuario debe tener AL MENOS UNO de los roles
+         │        │
+         │        └─ No → denegar 403 (prohibido)
+         │
+         └─ 6. Llamar $next($authenticatedRequest)
+                  └─ El handler de la ruta se ejecuta; $req->user() devuelve AuthenticatedUser
 ```
 
 ---
