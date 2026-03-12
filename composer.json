@@ -1,0 +1,27 @@
+{
+  "name": "alberto-cruz-mtz/simple-router",
+  "description": "Enrutador HTTP inspirado en Express para PHP con tipos estrictos, canalización de middleware y manejo de errores limpio. permitiendo utilizar un enrutador basico sin librerias pesadas",
+  "type": "library",
+  "license": "MIT",
+  "keywords": [
+    "router",
+    "http",
+    "middleware",
+    "php"
+  ],
+  "autoload": {
+    "psr-4": {
+      "Router\\": "src/"
+    }
+  },
+  "authors": [
+    {
+      "name": "jose alberto cruz martinez",
+      "email": "albertocruz8133@proton.me"
+    }
+  ],
+  "minimum-stability": "dev",
+  "require": {
+    "php": ">=8.1"
+  }
+}
