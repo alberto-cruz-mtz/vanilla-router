@@ -78,10 +78,20 @@ final class Route
             return [];
         }
 
-        preg_match($this->pattern, $path, $matches);
+        if (preg_match($this->pattern, $path, $matches) !== 1) {
+            return [];
+        }
 
         $values = array_slice($matches, 1);
-        return array_combine($this->paramKeys, $values);
+        $params = [];
+
+        foreach ($this->paramKeys as $index => $key) {
+            if (array_key_exists($index, $values)) {
+                $params[$key] = $values[$index];
+            }
+        }
+
+        return $params;
     }
 
     // ─── Compilation ─────────────────────────────────────────────────────────
@@ -100,19 +110,19 @@ final class Route
         $paramKeys = [];
 
         $normalized = '/' . trim($path, '/');
+        $escaped = preg_quote($normalized, '#');
 
-        $escaped = preg_replace_callback(
-            '/:([a-zA-Z_][a-zA-Z0-9_]*)/',
+        $pattern = preg_replace_callback(
+            '#\\\\:([a-zA-Z_][a-zA-Z0-9_]*)#',
             static function (array $matches) use (&$paramKeys): string {
                 $paramKeys[] = $matches[1];
-                return '([^\/]+)';
+                return '([^/]+)';
             },
-            preg_quote($normalized, '#'),
+            $escaped,
         );
 
-        // Undo the escaping applied to our own capture groups.
-        $pattern = '#^' . str_replace('\(\[\^\\\/\]\+\)', '([^\/]+)', $escaped) . '$#';
+        $regex = '#^' . $pattern . '$#';
 
-        return [$pattern, $paramKeys];
+        return [$regex, $paramKeys];
     }
 }
